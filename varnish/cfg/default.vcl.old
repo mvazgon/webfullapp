@@ -1,0 +1,151 @@
+vcl 4.1;
+
+import std;
+
+backend default {
+	.host="httpdphp8";
+	.port="8080";
+}
+
+#regla de direcciones IP desde la que admitimos las ordenes de purgado.
+acl purge {
+	"localhost";
+	"127.0.0.1";
+	"::1";
+}
+
+# cadena que procesa la request, es la info q recibimos del navegador del cliente. 
+sub vcl_recv {
+	#eliminamos del request el número de puerto
+	set req.http.host = regsub(req.http.host, ":[0-9]+","");
+
+	#eliminamos las cabeceras de la petición http.proxy que es una vulnerabilidad de ciertas apps.
+	unset req.http.proxy;
+
+	#se ordena la url para que generen siempre el mismo hash las mismas peticiones aunque vengan desordenadas los parametros
+	set req.url = std.querysort(req.url);
+
+	#eliminamos de la url el signo ? para evitar problemas de hash 
+	set req.url = regsub(req.url, "/?$", "");
+
+	#para eliminar contenido de la petición que google analiza desde el lado de cliente y solo genera hashes duplicados
+	if (req.url ~ "(\?|&)(utm_source|utm_medium|utm_campaign|utm_content|gclid|cx|ie|cof|siteur)=")
+	{
+		set req.url = regsuball(req.url, "&(utm_source|utm_medium|utm_campaign|utm_content|gclid|cx|ie|cof|siteur)=","");
+		set req.url = regsuball(req.url, "\?(utm_source|utm_medium|utm_campaign|utm_content|gclid|cx|ie|cof|siteur)=","");
+		set req.url = regsuball(req.url, "\?&", "?");
+		set req.url = regsuball(req.url, "\?$", "");
+	}
+	# Eliminamos las cookies de seguimiento de google analytics, hubspot, hotjar,publicidad de google.
+	set req.http.cookie = regsuball (req.http.cookie, "(_utm|_ga|_opt)[a-z_]","");
+	set req.http.cookie = regsuball (req.http.cookie, "(_[a-zA-Z])=[^;]+(; )?", "");
+	set req.http.cookie = regsuball (req.http.cookie, "(__)?hs[a-z_\-]+=[^;]+(;)?", "");
+	set req.http.cookie = regsuball (req.http.cookie, "hubspotuk-[^;]+(;)?","");
+	set req.http.cookie = regsuball (req.http.cookie, "(NID|DSID|__gads|GED_PLAYLIST_ACTIVITY|ACLK_DATA|ANID|AID|IDE|TAID|_gcl_[a-z]*|FLC|RUL|PAIDCONTENT|1P_JAR|Conversion|VISITOR_INFO1[a-z_]*)=[^;]+(; )?", "");
+	set req.http.Cookie = regsuball(req.http.Cookie, "cookiename=[^;]+(; )?", "");
+	set req.http.Cookie = regsuball(req.http.Cookie, "^;\s*", "");
+	if ( req.http.Cookie ~ "^\s*$"){
+		unset req.http.Cookie ;
+	}
+
+	# establecemos el rastro del protocolo usado para realizar la petición ya que Varnish no gestiona este 
+	if ( !req.http.X-Forwarder-Proto){
+		if ( std.port.(server.ip) == 443 ){
+			set req.http.X-Forwarder-Proto = "https";
+		}else{
+			set req.http.X-Forwarder-Proto = "http";
+		}
+	}
+
+
+	#en la ACL definidad como purge la evaluamos para permitir o no (depende de la IP) que se haga el procedimiento sobre la mem cache
+	if ( req.method == "PURGE")
+	{
+		if (!client.ip ~ purge){
+			return (synth(405,client.ip + " is not allowed to send PURGE request."));
+		}
+		return (purge);
+	}
+
+	#manejamos web sockets y los pasamos al backend en 2 pasos.
+	#paso 1 detección
+	if (req.http.upgrade ~ "(?i)websocket"){
+		return(pipe);
+	}
+
+	#manejamos los métodos .
+	#dejamos pasar al backend aquellas que afectan el contenido : PUT,POST,DELETE, OPTIONS
+	
+	if ( req.method != "GET" &&
+             req.method != "HEAD" &&
+	     req.method != "PUT" &&
+	     req.method != "POST" &&
+	     req.method != "TRACE" &&
+	     req.method != "OPTIONS" &&
+	     req.method != "PATCH" &&
+	     req.method != "DELETE")
+	{
+		return (synth(405,"Method not allowed"));
+	}
+
+	#NO cacheamos aquellas que afectan al contenido
+	if (req.method != "GET" && req.method !="HEAD"){
+		return (pass);
+	}
+
+	# en este caso vamos a cachear toda la información estática de archivos que enviamos al cliente.
+	if (req.url ~ "^[^?]*\.(7z|avi|bmp|bz2|css|csv|doc|docx|eot|flac|flv|gif|gz|ico|jpeg|jpg|js|less|mka|mkv|mov|mp3|mp4|mpeg|mpg|odt|ogg|ogm|opus|otf|pdf|png|ppt|pptx|rar|rtf|svg|svgz|swf|tar|tbz|tgz|ttf|txt|txz|wav|webm|webp|woff|woff2|xls|xlsx|xml|xz|zip)(\?.*)?$") {
+	    unset req.http.Cookie;
+	    unset req.http.Authorization;
+	    # Only keep the following if VCL handling is complete
+	    return(hash);
+	}
+
+	#aqui manejamos la capacidad de Edge 
+	set req.http.Surrogate-Capability = "ESI/1.0";
+
+	#Gestionando la recarga de contenido dinámico de forma asíncrona
+	if (std.healthy(req.backend_hint)){
+		set req.grace = 10s;
+	}
+}
+
+sub vcl_synth {
+	if (resp.status == 405)
+	{
+		set resp.http.Allow = "GET; HEAD, PUT, POST, OPTIONS, PATCH, DELETE";
+		set resp.body = "Method not allowed";
+		return (deliver);
+	}
+}
+
+sub vcl_hash {
+	hash_data (req.http.X-Forwarder-Proto);
+} 
+
+sub vcl_pipe {
+
+	#aqui tratamos la devolución de la petición de websocket
+	#paso 2
+	if (req.http.upgrade){
+		set bereq.http.upgrade = req.http.upgrade;
+	}
+	return (pipe);
+}
+
+# cacheamos en el navegador el contenido estático. habrá q sacar de aqui aquellos que se generen dinámicamente como los de office, comprimidos, etc..
+sub vcl_backend_response {
+	if (bereq.url ~ "^[^?]*\.(7z|avi|bmp|bz2|css|csv|doc|docx|eot|flac|flv|gif|gz|ico|jpeg|jpg|js|less|mka|mkv|mov|mp3|mp4|mpeg|mpg|odt|ogg|ogm|opus|otf|pdf|png|ppt|pptx|rar|rtf|svg|svgz|swf|tar|tbz|tgz|ttf|txt|txz|wav|webm|webp|woff|woff2|xls|xlsx|xml|xz|zip)(\?.*)?$") {
+        	unset beresp.http.Set-Cookie;
+	    	set beresp.ttl = 1d;
+	 }
+
+	 #Manejo de capacidades Edge 
+	 if (bereq.http.Surrogate-Control ~ "ESI/1.0"){
+	 	unset beresp.http.Surrogate-Control;
+		set beresp.do_esi = true;
+	}
+
+	#Respuesta debido al tiempo de gracia,en caso de caida del backend se servirá durante 6h más el contenido obsoleto, para dar capacidad a que se recupere.
+	set beresp.grace =  6h;
+}

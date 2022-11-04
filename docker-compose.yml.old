@@ -1,0 +1,30 @@
+version: "3"
+services:
+  varnish:
+    image: varnish6
+    container_name: varnish
+    ports:
+      - "80:80"
+    hostname: varnish6
+    networks:
+      red_web:
+        ipv4_address: 192.168.144.100
+    tmpfs:
+      - /var/lib/varnish:exec
+    environment:
+      - VARNISH_SIZE=2G  
+    command: "-p default_keep=300"
+    depends_on:
+      - "httpd" 
+  httpd:
+    image: httpdphp8
+    container_name: httpdphp
+    hostname: httpdphp
+    networks:
+      red_web:
+        ipv4_address: 192.168.144.101
+networks:
+  red_web:
+    ipam:
+      config:
+        - subnet: 192.168.144.0/24 
