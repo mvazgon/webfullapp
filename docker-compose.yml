@@ -24,7 +24,12 @@ services:
     depends_on:
       - "httpd" 
   httpd:
-    image: httpdphp8
+    image: wordpress:php8.0
     container_name: httpd
+    enviroment:
+      WORDPRESS_DB_HOST: mysql
+      WORDPRESS_DB_USER: mysqluser
+      WORDPRESS_DB_NAME: mysqlpassword
+      WORDPRESS_TABLE_PREFIX: wp
 #    ports:
 #      - "8080:80"
