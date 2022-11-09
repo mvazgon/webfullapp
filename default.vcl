@@ -6,13 +6,15 @@ backend default {
 }
 
 sub vcl_recv {
+    #indicamos cual es el backend de este sitio.
+    set req.backend_hint = default;
     #regla para pasar peticiones backend
     if (req.url ~ "^/wp-admin($|/.*)+"){
         return(pass);
-    }
-    #regla de los metodos para pasar peticiones al backend
-    if (req.method != "GET" && req.method != "HEAD"){
-        return (pass);
+    } else if ( req.method == "POST"){
+    	return(pass);
+    } else {
+    	return(hash);
     }
 }
 
