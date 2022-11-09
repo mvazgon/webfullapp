@@ -6,7 +6,17 @@ backend default {
 }
 
 sub vcl_recv {
-    if (req.url ~ "^/admin($|/.*)+"){
+    #regla para pasar peticiones backend
+    if (req.url ~ "^/wp-admin($|/.*)+"){
         return(pass);
     }
+    #regla de los metodos para pasar peticiones al backend
+    if (req.method != "GET" && req.method != "HEAD"){
+        return (pass);
+    }
+}
+
+sub vcl_backend_response {
+    set beresp.ttl = 5m;
+    set beresp.grace = 2h;
 }

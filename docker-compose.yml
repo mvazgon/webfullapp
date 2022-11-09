@@ -1,24 +1,24 @@
 version: "3"
 services:
-  nginx:
-    image: nginx:stable
-    container_name: nginx
-    volumes:
-      - "./nginx/default.conf:/etc/nginx/conf.d/default.conf"
-    ports:
-      - "80:8081"
-    depends_on:
-      - "varnish"
+#  nginx:
+#    image: nginx:stable
+#    container_name: nginx
+#    volumes:
+#      - "./nginx/default.conf:/etc/nginx/conf.d/default.conf"
+#    ports:
+#      - "80:8081"
+#    depends_on:
+#      - "varnish"
   varnish:
     image: varnish:stable
     container_name: varnish
     volumes:
       - "./default.vcl:/etc/varnish/default.vcl"
-#    ports:
-#      - "8080:80"
+    ports:
+      - "8080:80"
     tmpfs:
       - /var/lib/varnish:exec
-    environment:
+    environment:  
       - VARNISH_SIZE=2G  
     command: "-p default_keep=300"
     depends_on:
@@ -26,12 +26,17 @@ services:
   httpd:
     image: wordpress:php8.0
     container_name: httpd
-    enviroment:
+    environment:
       WORDPRESS_DB_HOST: mysqld
       WORDPRESS_DB_USER: wp_user
-      WORDPRESS_DB_NAME: Asurb4n1p4l.wp
+      WORDPRESS_DB_NAME: wp
+      WORDPRESS_DB_PASSWORD: Asurb4n1p4l.wp
       WORDPRESS_TABLE_PREFIX: wp
-    depends:
+      WORDPRESS_DEBUG: 1
+    volumes:
+      - ./wp/wp-content:/var/www/html/wp-content
+      - ./wp/backup:/opt/backup
+    depends_on:
       - "mysqld"
 #    ports:
 #      - "8080:80"
@@ -44,4 +49,7 @@ services:
       MYSQL_USER: wp_user
       MYSQL_PASSWORD: Asurb4n1p4l.wp
     volumes:
-      - "./mysqld/data:/var/lib/mysql/data"
+      - ./mysqld/data:/var/lib/mysql
+      - ./mysql/backup:/opt/backup
+#    ports:
+#      - "3306:3306"
